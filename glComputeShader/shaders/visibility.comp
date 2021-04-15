@@ -1,0 +1,230 @@
+#version 430
+
+layout(r32ui, binding = 0) uniform uimage2D visOut;
+layout(r32f, binding = 1) readonly coherent uniform image2D elData;
+layout (local_size_x = 1, local_size_y = 1) in;
+
+const float PI = 3.1415926535897932384626433832795;
+
+uniform float observerAltitude; /* in meters */
+uniform float targetAltitude; /* in meters */
+uniform float lat1; /* in radians */
+uniform float lon1; /* in radians */
+uniform float actualRadius; /* in km */
+uniform float effectiveRadius; /* in km */
+
+// Image registration -- upper left corner lat,lon (corresponds to image's
+// 0,0) and lower right corner lat,lon (corresponds to image's W,H)
+uniform vec4 imgBounds; /* in radians, lat lon lat lon */
+uniform ivec2 imgSize; /* pixels, height width */
+
+// uvec3 gl_GlobalInvocationID	-- global index of work item currently being operated on by a compute shader
+// uvec3 gl_LocalInvocationID	-- index of work item currently being operated on by a compute shader
+//			or uint gl_LocalInvocationIndex -- 1d index representation of gl_LocalInvocationID
+// uvec3 gl_WorkGroupID			-- index of the workgroup currently being operated on by a compute shader
+// uvec3 gl_NumWorkGroups		-- global work group size we gave to glDispatchCompute()
+// uvec3 gl_WorkGroupSize		-- local work group size we defined with layout
+
+
+void toIntrinsic(float lat, float lon, out ivec2 p) {
+	p = ivec2(round((vec2(lon,lat)-imgBounds.yx)/(imgBounds.wz-imgBounds.yx)*vec2(imgSize.yx)));
+}
+
+void fromInstrinsic(ivec2 j, out float lat, out float lon) {
+	vec2 p = imgBounds.yx + vec2(j)/vec2(imgSize.yx)*(imgBounds.wz-imgBounds.yx);
+	lon = p.x;
+	lat = p.y;
+}
+
+void main() {
+
+	// Observer location to intrinsic units
+	ivec2 xy1;
+	toIntrinsic(lat1,lon1,xy1);
+
+	// DEBUG: 
+	//imageStore(visOut, xy1, vec4(1,0,0,1.0));
+
+	float h1 = imageLoad(elData, xy1).x + observerAltitude;
+
+	// Job index to endpoint (intrinsic)
+    ivec2 j;
+	uint idx = gl_GlobalInvocationID.x;
+	if (idx<imgSize.y-2) { j = ivec2( 1+idx, 0 ); }
+    else if (idx<imgSize.y-2+imgSize.x) { j = ivec2( imgSize.y-1, idx-imgSize.y+2 ); }
+    else if (idx<imgSize.y-2+imgSize.x+imgSize.y-2) { j = ivec2( 3+idx-imgSize.y-imgSize.x, imgSize.x-1 ); }
+    else { j = ivec2( 0, idx-2*imgSize.y-imgSize.x+4 ); }
+    
+	// Ray endpoints from instrinsic units to lat,lon
+	float lat2, lon2;
+	fromInstrinsic(j,lat2,lon2);
+
+	// DEBUG: 
+	//ivec2 tmp;
+	//toIntrinsic(lat2,lon2,tmp);
+	//imageStore(visOut, tmp+5, vec4(1,0,0,1.0));
+
+	// Precompute some parameters for great-circle track way points
+    
+    // Compute distance between origin and endpoint, in units of radians
+    // Using equation from https://edwilliams.org/avform.htm#Dist (the "less
+    // subject to rounding error" version)
+	float d = 2*asin(sqrt( pow(sin((lat1-lat2)/2),2) + cos(lat1)*cos(lat2)*pow(sin((lon1-lon2)/2),2) ));
+
+	float p1a = cos(lat1)*cos(lon1);
+    float p1b = cos(lat2)*cos(lon2);
+    float p2a = cos(lat1)*sin(lon1);
+    float p2b = cos(lat2)*sin(lon2);
+
+	ivec2 xyp = xy1;
+	float maxAng = -PI;
+	float flast = 0.0;
+
+	for(float f = 0.01; f <= 1.0; f += 0.01) {
+		// Compute great-circle track way points at fractional f (f=0 is point 1. f=1 is point 2.) 
+		float A = sin((1.0-f)*d)/sin(d);
+        float B = sin(f*d)/sin(d);
+        float x = A*p1a + B*p1b;
+        float y = A*p2a + B*p2b;
+        float z = A*sin(lat1)+ B*sin(lat2);
+
+		// Segment end location 
+        float latf = atan(z,sqrt(x*x + y*y));
+        float lonf = atan(y,x);
+
+		// Convert segment end location to intrinsic units (pixels)
+		ivec2 xyf;
+		toIntrinsic(latf,lonf,xyf);
+
+		// Number of pixels in the segment being drawn
+        float npix = length(xyf-xyp);
+
+		// Total segment length in meters
+        float drpix = (f-flast)*d*actualRadius*1e3;
+
+		// Bresenham Algorithm to draw a line between xp,yp and xf,yf
+		int dx = abs(xyf.x - xyp.x); 
+        int sx = xyp.x < xyf.x ? 1 : -1;
+        int dy = -abs(xyf.y - xyp.y); 
+        int sy = xyp.y < xyf.y ? 1 : -1;
+        int err = dx + dy; /* error value e_xy */
+
+		while(true) {
+			// Range distance within the segment traversed by line drawing algorithm so far
+            float drng = (1-length(xyf-xyp)/npix)*drpix;
+
+			// Compute the total distance along the ray so far
+            float gndRng = (d*flast*actualRadius*1e3 + drng);
+
+			// Adjust Earth profile altitude to take into account effective radius of the Earth
+            float r = (effectiveRadius*1e3) + imageLoad(elData, xyp).x;
+            float phi = gndRng/(effectiveRadius*1e3);
+            float rng = r * sin(phi);
+            float el = r * cos(phi) - (effectiveRadius*1e3);
+            el = el - h1;
+
+			// Compute angles of sight to the terrain
+            float elAng = atan( el / rng );
+
+			// Compute angles of sight to the elevation above ground level
+            float testAng = atan( (el+targetAltitude) / rng );
+            
+            // Pack into 32-bit words
+            ivec2 xypb = ivec2(floor(xyp.x/32),xyp.y);
+            uint bitidx = xyp.x - xypb.x*32;
+
+			// Compute visibility state based on largest elevation angle encountered so far
+			//uint curState = int(imageLoad(visOut, xyp).x);
+			//uint newState = int(testAng > maxAng) + curState;
+			//imageStore(visOut, xyp, vec4(newState,0,0,1.0));
+            uint newState = uint(testAng > maxAng) << bitidx;
+            imageAtomicOr(visOut, xypb, newState);
+
+			maxAng = max(maxAng,elAng);
+
+			if (xyp.x == xyf.x && xyp.y == xyf.y) break;
+            int e2 = 2 * err;
+            if (e2 >= dy) { err += dy; xyp.x += sx; }  /* e_xy+e_x > 0 */
+            if (e2 <= dx) { err += dx; xyp.y += sy; } /* e_xy+e_y < 0 */
+		}
+
+		flast = f;
+
+	}
+
+
+//		ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+//		ivec2 size = imageSize(inElev);
+//		if (pix.x >= size.x || pix.y >= size.y) {
+//			return;
+//		}
+//
+//		vec2 pos = vec2(pix) / vec2(size.x, size.y);
+//		/* Hillshading */
+//		float a = imageLoad(inElev, ivec2(gl_GlobalInvocationID.x-1,gl_GlobalInvocationID.y-1)).x;
+//		float b = imageLoad(inElev, ivec2(gl_GlobalInvocationID.x,gl_GlobalInvocationID.y-1)).x;
+//		float c = imageLoad(inElev, ivec2(gl_GlobalInvocationID.x+1,gl_GlobalInvocationID.y-1)).x;
+//		float d = imageLoad(inElev, ivec2(gl_GlobalInvocationID.x-1,gl_GlobalInvocationID.y)).x;
+//		float e = imageLoad(inElev, ivec2(gl_GlobalInvocationID.x,gl_GlobalInvocationID.y)).x;
+//		float f = imageLoad(inElev, ivec2(gl_GlobalInvocationID.x+1,gl_GlobalInvocationID.y)).x;
+//		float g = imageLoad(inElev, ivec2(gl_GlobalInvocationID.x-1,gl_GlobalInvocationID.y+1)).x;
+//		float h = imageLoad(inElev, ivec2(gl_GlobalInvocationID.x,gl_GlobalInvocationID.y+1)).x;
+//		float i = imageLoad(inElev, ivec2(gl_GlobalInvocationID.x+1,gl_GlobalInvocationID.y+1)).x;
+//
+//		float dz_dy = ((g + 2*h + i) - (a + 2*b + c)) / (8);
+//		float dz_dx = ((c + 2*f + i) - (a + 2*d + g)) / (8);
+//		float z_factor = 1.0;
+//		float slope_rad = atan(z_factor * sqrt(dz_dx*dz_dx + dz_dy*dz_dy));
+//		float aspect_rad = atan(dz_dy, -dz_dx);
+//		float zenith_rad = PI/2.0;
+//		float azimuth_rad = PI/6.0;
+//		float hillshade = 0.5 + 0.5 * ((cos(zenith_rad) * cos(slope_rad)) + (sin(zenith_rad) * sin(slope_rad) * cos(azimuth_rad - aspect_rad)));
+//
+//		imageStore(destTex, pix, vec4(hillshade, hillshade, hillshade, 1.0));
+
+
+}
+
+
+//#version 430
+//layout(local_size_x = 1, local_size_y = 1) in;
+//layout(rgba32f, binding = 0) uniform image2D img_output;
+//
+//void main() {
+//  // base pixel colour for image
+//  vec4 pixel = vec4(0.5, 0.0, 0.0, 1.0);
+//  // get index in global work group i.e x,y position
+//  ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
+//  
+//  //
+//  // interesting stuff happens here later
+//  //
+//  
+//  // output to a specific pixel in the image
+//  imageStore(img_output, pixel_coords, pixel);
+//}
+
+
+
+//#version 430
+//layout(local_size_x=256) in;
+//
+//layout(location = 0) uniform float dt;
+//layout(std430, binding=0) buffer pblock { vec4 positions[]; };
+//layout(std430, binding=1) buffer vblock { vec4 velocities[]; };
+//
+//void main() {
+//    int N = int(gl_NumWorkGroups.x*gl_WorkGroupSize.x);
+//    int index = int(gl_GlobalInvocationID);
+//
+//    vec3 position = positions[index].xyz;
+//    vec3 velocity = velocities[index].xyz;
+//    vec3 acceleration = vec3(0,0,0);
+//    for(int i = 0;i<N;++i) {
+//        vec3 other = positions[i].xyz;
+//        vec3 diff = position - other;
+//        float invdist = 1.0/(length(diff)+0.001);
+//        acceleration -= diff*0.1*invdist*invdist*invdist;
+//    }
+//    velocities[index] = vec4(velocity+dt*acceleration,0);
+//}
