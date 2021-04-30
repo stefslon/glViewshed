@@ -1,26 +1,21 @@
+function visOut = glviewshed(elData,imgBounds,lat1,lon1,observerAltitude,targetAltitude,actualRadius,effectiveRadius)
 %
 %   Prototype for GL based viewshed type algorithm
-%
-
-elData  = imread('D:\Stefan\Cwork\glViewshed\glComputeShader\elevation\z13_2048.png');
-elData  = double(elData(:,:,1))*256.0 + double(elData(:,:,2)) + double(elData(:,:,3)/256.0) - 32768.0;
-elData(elData<2)    = 0;
-
+%   
+%   mexViewshed(elData,imgBounds,lat1,lon1,observerAltitude,targetAltitude,actualRadius,effectiveRadius);
 
 DEBUG   = false;
 
 %% Inputs (uniforms)
+% observerAltitude    = 2.0;
+% targetAltitude      = 10.0;
+% lat1                = 32.56 * pi/180;
+% lon1                = -117.25 * pi/180;
+% actualRadius        = 6371.009; % km
+% effectiveRadius     = 4/3*actualRadius;
 
-observerAltitude    = 2.0;
-targetAltitude      = 10.0;
-lat1                = 32.56 * pi/180;
-lon1                = -117.25 * pi/180;
-% lat1                = 20.55 * pi/180;
-% lon1                = -130.25 * pi/180;
-actualRadius        = 6371.009; % km
-effectiveRadius     = 4/3*actualRadius;
-
-
+lat1                = lat1 * pi/180;
+lon1                = lon1 * pi/180;
 
 [tex_h,tex_w]       = size(elData);
 imgSize             = [tex_h tex_w]; % y size x size
@@ -29,12 +24,12 @@ imgSize             = [tex_h tex_w]; % y size x size
 % 0,0) and lower right corner lat,lon (corresponds to image's W,H)
 % Note this is approximate, I didn't do due diligence in getting actual
 % coordinates of the image
-imgBounds       = [ 32.73212635384415, -117.29277687517559, 32.44374242183821, -116.91606950256245  ] * pi/180;
+% imgBounds       = [ 32.73212635384415, -117.29277687517559, 32.44374242183821, -116.91606950256245  ] * pi/180;
 % imgBounds       = [ 48.73212635384415, -133.29277687517559, 16.44374242183821, -100.91606950256245  ] * pi/180;
-imgLat0         = imgBounds(1);
-imgLon0         = imgBounds(2);
-imgLat2         = imgBounds(3);
-imgLon2         = imgBounds(4);
+imgLat0         = imgBounds(1) * pi/180;
+imgLon0         = imgBounds(2) * pi/180;
+imgLat2         = imgBounds(3) * pi/180;
+imgLon2         = imgBounds(4) * pi/180;
 
 
 %% Job size
@@ -206,36 +201,36 @@ for ij=1:nj
     
 end
 
-%% Hillshade
-a = elData(1:end-2,1:end-2);
-b = elData(2:end-1,1:end-2);
-c = elData(3:end,1:end-2);
-d = elData(1:end-2,2:end-1);
-e = elData(2:end-1,2:end-1);
-f = elData(3:end,2:end-1);
-g = elData(1:end-2,3:end);
-h = elData(2:end-1,3:end);
-i = elData(3:end,3:end);
-
-dz_dy       = ((g + 2*h + i) - (a + 2*b + c)) / (8); dz_dy = cat(2,dz_dy(:,1),dz_dy,dz_dy(:,end)); dz_dy = cat(1,dz_dy(1,:),dz_dy,dz_dy(end,:));
-dz_dx       = ((c + 2*f + i) - (a + 2*d + g)) / (8); dz_dx = cat(2,dz_dx(:,1),dz_dx,dz_dx(:,end)); dz_dx = cat(1,dz_dx(1,:),dz_dx,dz_dx(end,:));
-z_factor    = 1.0;
-slope_rad   = atan(z_factor .* sqrt(dz_dx.*dz_dx + dz_dy.*dz_dy));
-aspect_rad  = atan2(dz_dy, -dz_dx);
-zenith_rad  = pi/2.0;
-azimuth_rad = pi/6.0;
-hillshade   = 0.5 + 0.5 * ((cos(zenith_rad) .* cos(slope_rad)) + (sin(zenith_rad) .* sin(slope_rad) .* cos(azimuth_rad - aspect_rad)));
-
-
-%% Combine hillshade with visbility
-outImg          = repmat(hillshade./max(hillshade(:))*0.5,[1 1 3]);
-outImg(:,:,1)   = outImg(:,:,1) + visOut*0.7;
+% %% Hillshade
+% a = elData(1:end-2,1:end-2);
+% b = elData(2:end-1,1:end-2);
+% c = elData(3:end,1:end-2);
+% d = elData(1:end-2,2:end-1);
+% e = elData(2:end-1,2:end-1);
+% f = elData(3:end,2:end-1);
+% g = elData(1:end-2,3:end);
+% h = elData(2:end-1,3:end);
+% i = elData(3:end,3:end);
+% 
+% dz_dy       = ((g + 2*h + i) - (a + 2*b + c)) / (8); dz_dy = cat(2,dz_dy(:,1),dz_dy,dz_dy(:,end)); dz_dy = cat(1,dz_dy(1,:),dz_dy,dz_dy(end,:));
+% dz_dx       = ((c + 2*f + i) - (a + 2*d + g)) / (8); dz_dx = cat(2,dz_dx(:,1),dz_dx,dz_dx(:,end)); dz_dx = cat(1,dz_dx(1,:),dz_dx,dz_dx(end,:));
+% z_factor    = 1.0;
+% slope_rad   = atan(z_factor .* sqrt(dz_dx.*dz_dx + dz_dy.*dz_dy));
+% aspect_rad  = atan2(dz_dy, -dz_dx);
+% zenith_rad  = pi/2.0;
+% azimuth_rad = pi/6.0;
+% hillshade   = 0.5 + 0.5 * ((cos(zenith_rad) .* cos(slope_rad)) + (sin(zenith_rad) .* sin(slope_rad) .* cos(azimuth_rad - aspect_rad)));
 
 
-%%
-figure; imagesc(linspace(imgLon0,imgLon2,imgSize(2))*180/pi,linspace(imgLat0,imgLat2,imgSize(1))*180/pi,outImg)
-hold all; plot(lon1*180/pi,lat1*180/pi,'r.','MarkerSize',18);
-plot(lon1*180/pi,lat1*180/pi,'k.','MarkerSize',12);
-set(gca,'YDir','normal');
+% %% Combine hillshade with visbility
+% outImg          = repmat(hillshade./max(hillshade(:))*0.5,[1 1 3]);
+% outImg(:,:,1)   = outImg(:,:,1) + visOut*0.7;
+
+
+% %%
+% figure; imagesc(linspace(imgLon0,imgLon2,imgSize(2))*180/pi,linspace(imgLat0,imgLat2,imgSize(1))*180/pi,outImg)
+% hold all; plot(lon1*180/pi,lat1*180/pi,'r.','MarkerSize',18);
+% plot(lon1*180/pi,lat1*180/pi,'k.','MarkerSize',12);
+% set(gca,'YDir','normal');
 
 

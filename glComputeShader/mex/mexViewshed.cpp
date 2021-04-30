@@ -114,14 +114,16 @@ void glErrorCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLs
 
 void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 {
+    bool firstTime = false;
 	if (!isInit) {
         mprintf("mexViewshed: starting context...\n");
         mexAtExit(closeContext);
-        if (!startContext(&ci, 4, 3)) {
+        if (!startContext(&ci, 4, 4)) {
             mprintf("startContext failure.\n");
             return;
         }
         isInit = true;
+        firstTime = true;
     }
     
     if (nrhs<8) {
@@ -131,7 +133,8 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
     pollEvents();
 
 	gladLoadGL();
-	mprintf("mexViewshed: OpenGL %d.%d\n", GLVersion.major, GLVersion.minor);
+    if (firstTime)
+        mprintf("mexViewshed: OpenGL %d.%d\n", GLVersion.major, GLVersion.minor);
 
 	/* Enable openGL error logging */
 	glEnable(GL_DEBUG_OUTPUT);
@@ -183,6 +186,9 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_R32UI, outW, outH, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, NULL);
 	glBindImageTexture(0, outTex, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32UI);
+    GLuint clearColor[1] = {0};
+    glClearTexImage(outTex, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, &clearColor);
+
 
 	/* Setup uniforms */
 	glUseProgram(propProg);
@@ -240,6 +246,7 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
  		glUseProgram(propProg);
  		glDispatchCompute(numRays, 1, 1);
  	}
+    
 	// Make sure writing to image has finished before read
 	glMemoryBarrier(GL_ALL_BARRIER_BITS);
     TOC("Compute shader");
